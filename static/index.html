@@ -142,6 +142,10 @@ button:hover { background: #4ade80; }
     <span id="connection">Connecting...</span>
 </div>
 
+<canvas id="minimap" width="160" height="160" style="position:fixed;bottom:14px;left:14px;z-index:5;border-radius:8px;background:#0b1622aa;"></canvas>
+
+<div id="scoreboard" style="position:fixed;bottom:14px;right:14px;z-index:5;padding:9px 13px;border-radius:8px;background:#101820dd;font-size:13px;min-width:140px;"></div>
+
 <div id="help">
     W / ↑ Accelerate &nbsp; S / ↓ Brake &nbsp; A D / ← → Steer
     &nbsp; SPACE Fire &nbsp; R Reset
@@ -161,6 +165,7 @@ button:hover { background: #4ade80; }
             A / D to steer<br>
             SPACE to fire
         </p>
+        <input id="nameInput" placeholder="Your name (optional)" maxlength="20" style="margin-top:12px;padding:8px;border-radius:6px;border:1px solid #ffffff25;background:#0b1622;color:white;width:80%" />
         <button id="startButton">START RACE</button>
     </div>
 </div>
@@ -182,35 +187,38 @@ import * as THREE from "three";
 ========================================================= */
 
 const CONFIG = {
-    trackRadius: 75,
-    trackWidth: 16,
+    trackRadius: 150,
+    trackWidth: 14,
     wallHeight: 0.8,
 
     // Number of spline samples per original control-point segment.
     trackSubdivisions: 8,
 
-    maxSpeed: 38,
-    reverseSpeed: 12,
+    maxSpeed: 45,
+    reverseSpeed: 18,
 
-    acceleration: 23,
-    braking: 32,
+    acceleration: 30,
+    braking: 40,
     drag: 7,
 
-    steering: 2.5,
-    minSteerFactor: 0.4,   // fraction of steering left at max speed
+    steering: 2.2,
+    minSteerFactor: 0.6,   // fraction of steering left at max speed
     kartRadius: 1.5,
 
-    wallSpinSpeed: 10,
-    wallSpinDamping: 2.2,
+    wallSpinSpeed: 14,
+    wallSpinDamping: 2.0,
 
-    wallBounceSpeed: 10,
-    wallBounceDuration: 0.38,
+    wallBounceSpeed: 16,
+    wallBounceDuration: 0.32,
 
-    shellSpeed: 48,
+    shellSpeed: 70,
     shellCooldown: 700,
-    shellMaxBounces: 3,
+    shellMaxBounces: 5,
 
-    laps: 3
+    laps: 3,
+
+    boostAmount: 18,
+    mushroomCount: 4
 };
 
 /* =========================================================
@@ -228,6 +236,7 @@ const knockback = new THREE.Vector3();
 
 let ang = 0;
 let vel = 0;
+let boostTimer = 0;
 
 let raceStarted = false;
 let finished = false;
@@ -357,6 +366,31 @@ let spawnAngle = 0;
 
 let trackObjects = [];
 
+const mushrooms = [];
+
+function removeMushrooms() {
+    for (const m of mushrooms) {
+        scene.remove(m.mesh);
+        if (m.mesh.geometry) m.mesh.geometry.dispose();
+    }
+    mushrooms.length = 0;
+}
+
+function spawnMushrooms() {
+    removeMushrooms();
+    const mat = new THREE.MeshStandardMaterial({ color: 0xff66cc, emissive: 0x660044 });
+    for (let i = 0; i < CONFIG.mushroomCount; i++) {
+        const seg = trackSegments[Math.floor(Math.random() * trackSegments.length)];
+        const t = Math.random();
+        const point = seg.a.clone().lerp(seg.b, t);
+        const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.6, 8, 8), mat);
+        mesh.position.copy(point);
+        mesh.position.y = 0.6;
+        scene.add(mesh);
+        mushrooms.push({ mesh, point });
+    }
+}
+
 function removeTrack() {
     for (const object of trackObjects) {
         scene.remove(object);
@@ -399,7 +433,7 @@ function buildTrack(params) {
     trackPoints = [];
     trackSegments = [];
 
-    const controlPointCount = 128;
+    const controlPointCount = 256;
     const radius = CONFIG.trackRadius;
 
     /* 1. Generate original control points */
@@ -415,7 +449,9 @@ function buildTrack(params) {
             params.h2_a * Math.cos(3 * a + params.h2_p) +
             params.h3_a * Math.sin(4 * a + params.h3_p) +
             (params.h4_a || 0) *
-            Math.cos(5 * a + (params.h4_p || 0));
+            Math.cos(5 * a + (params.h4_p || 0)) +
+            (params.h5_a || 0) *
+            Math.sin(6 * a + (params.h5_p || 0));
 
         controlPoints.push(
             new THREE.Vector3(
@@ -663,6 +699,8 @@ function buildTrack(params) {
 
         addTrackObject(tile);
     }
+
+    spawnMushrooms();
 }
 
 buildTrack({
@@ -741,6 +779,8 @@ function makeKart(color) {
 const player = makeKart("red");
 
 const remoteKarts = new Map();
+const playerNames = new Map();
+const playerWins = new Map();
 
 function positionPlayerAtSpawn() {
     player.root.position.copy(spawnPosition);
@@ -852,8 +892,25 @@ ws.onmessage = event => {
 
         document.getElementById("pid").textContent = myId;
 
+        if (message.names) {
+            for (const [id, name] of Object.entries(message.names)) {
+                playerNames.set(id, name);
+            }
+        }
+
+        if (message.wins) {
+            for (const [id, count] of Object.entries(message.wins)) {
+                playerWins.set(id, count);
+            }
+        }
+
         buildTrack(message.track);
         resetRace();
+    }
+
+    if (message.type === "name") {
+        playerNames.set(message.id, message.name);
+        renderScoreboard();
     }
 
     if (message.type === "state") {
@@ -914,6 +971,11 @@ ws.onmessage = event => {
             message.id === myId
                 ? "YOU WIN!"
                 : "PLAYER " + message.id + " WINS!";
+
+        if (message.wins !== undefined) {
+            playerWins.set(message.id, message.wins);
+            renderScoreboard();
+        }
     }
 
     if (message.type === "reset") {
@@ -924,11 +986,68 @@ ws.onmessage = event => {
     }
 };
 
-function updatePlayerCount() {
-    document.getElementById("players").textContent =
-        remoteKarts.size + 1;
+function renderScoreboard() {
+    const el = document.getElementById("scoreboard");
+    const ids = [myId, ...remoteKarts.keys()];
+    el.innerHTML = "<b>Players</b><br>" + ids.map(id => {
+        const name = playerNames.get(id) || id;
+        const w = playerWins.get(id) || 0;
+        return (id === myId ? "* " : "") + name + " (" + w + ")";
+    }).join("<br>");
 }
 
+function drawMinimap() {
+    const canvas = document.getElementById("minimap");
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (!trackPoints.length) return;
+
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (const p of trackPoints) {
+        minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+        minZ = Math.min(minZ, p.z); maxZ = Math.max(maxZ, p.z);
+    }
+    const scale = Math.min(canvas.width, canvas.height) / Math.max(maxX - minX, maxZ - minZ) * 0.9;
+    const cx = canvas.width / 2;
+    const cz = canvas.height / 2;
+    const ox = (minX + maxX) / 2;
+    const oz = (minZ + maxZ) / 2;
+
+    ctx.strokeStyle = "#67e8f9";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < trackPoints.length; i++) {
+        const p = trackPoints[i];
+        const x = cx + (p.x - ox) * scale;
+        const y = cz + (p.z - oz) * scale;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+
+    // player dot + direction arrow
+    const px = cx + (player.root.position.x - ox) * scale;
+    const py = cz + (player.root.position.z - oz) * scale;
+    ctx.fillStyle = "#ef4444";
+    ctx.beginPath();
+    ctx.arc(px, py, 4, 0, Math.PI * 2);
+    ctx.fill();
+
+    const ax = px + Math.sin(ang) * 10;
+    const ay = py + Math.cos(ang) * 10;
+    ctx.strokeStyle = "#facc15";
+    ctx.beginPath();
+    ctx.moveTo(px, py);
+    ctx.lineTo(ax, ay);
+    ctx.stroke();
+}
+
+function updatePlayerCount() {
+    document.getElementById("players").textContent = remoteKarts.size + 1;
+    renderScoreboard();
+}
 /* =========================================================
    PROJECTILES
 ========================================================= */
@@ -958,7 +1077,8 @@ function shootShell() {
         type: "shoot",
         x: player.root.position.x,
         z: player.root.position.z,
-        ang
+        ang,
+        speed: vel
     });
 }
 
@@ -973,6 +1093,8 @@ function createShell(message) {
         Math.cos(message.ang)
     );
 
+    const shellSpeed = CONFIG.shellSpeed + (message.speed || 0);
+
     mesh.position.set(
         message.x + forward.x * 2,
         0.75,
@@ -984,7 +1106,7 @@ function createShell(message) {
     shells.set(message.projectile_id, {
         mesh,
         owner: message.owner,
-        velocity: forward.multiplyScalar(CONFIG.shellSpeed),
+        velocity: forward.multiplyScalar(shellSpeed),
         age: 0,
         bounces: 0,
         reportedHit: false
@@ -1030,7 +1152,7 @@ function updateShells(dt) {
         }
 
         if (
-            shell.age > 2.5 ||
+            shell.age > 4.0 ||
             Math.abs(shell.mesh.position.x) > 300 ||
             Math.abs(shell.mesh.position.z) > 300
         ) {
@@ -1152,6 +1274,9 @@ function updateSpin(dt) {
 
         spinLocked = false;
         vel = 0;
+
+        ang += spinAngle;
+        player.root.rotation.y = ang;
 
         bounceVelocity.set(0, 0, 0);
         bounceTimer = 0;
@@ -1318,10 +1443,14 @@ function updateDriving(dt) {
         }
     }
 
+    if (boostTimer > 0) boostTimer = Math.max(0, boostTimer - dt);
+
+    const speedCap = boostTimer > 0 ? CONFIG.maxSpeed + 15 : CONFIG.maxSpeed;
+
     vel = THREE.MathUtils.clamp(
         vel,
         -CONFIG.reverseSpeed,
-        CONFIG.maxSpeed
+        speedCap
     );
 
     /* Steering: harder at higher speed */
@@ -1357,11 +1486,11 @@ function updateDriving(dt) {
         player.root.position.copy(
             closest.point.clone().addScaledVector(
                 normal,
-                safeDistance - 0.05
+                safeDistance - 0.2
             )
         );
 
-        startWallSpin(normal);
+        vel = Math.max(0, vel - 2 * CONFIG.acceleration * dt);
     } else {
         handlePlayerCollision(nextPosition);
     }
@@ -1370,6 +1499,19 @@ function updateDriving(dt) {
         player.root.position.addScaledVector(knockback, dt);
 
         knockback.multiplyScalar(Math.exp(-5 * dt));
+    }
+
+    // Speed boost mushrooms
+    for (let i = mushrooms.length - 1; i >= 0; i--) {
+        const m = mushrooms[i];
+        const d = player.root.position.distanceTo(m.mesh.position);
+        if (d < 2.0) {
+            boostTimer = 2.0;
+            vel = Math.min(CONFIG.maxSpeed + 15, vel + CONFIG.boostAmount);
+            scene.remove(m.mesh);
+            if (m.mesh.geometry) m.mesh.geometry.dispose();
+            mushrooms.splice(i, 1);
+        }
     }
 
     player.root.position.y = 0;
@@ -1397,6 +1539,7 @@ function resetRace() {
     sentFinish = false;
 
     lastShotAt = 0;
+    boostTimer = 0;
 
     for (const id of [...shells.keys()]) {
         removeShell(id);
@@ -1521,6 +1664,13 @@ document.getElementById("startButton").addEventListener(
 
         raceStarted = true;
 
+        const name = document.getElementById("nameInput").value.trim().slice(0, 20);
+        if (name) {
+            playerNames.set(myId, name);
+            send({ type: "name", name });
+            renderScoreboard();
+        }
+
         document.getElementById("overlay").style.display = "none";
     }
 );
@@ -1543,6 +1693,7 @@ function animate(now) {
         sendPlayerState(dt);
         updateCamera(dt);
         updateHUD();
+        drawMinimap();
     } else {
         camera.lookAt(0, 0, 0);
     }

@@ -19,18 +19,23 @@ clients: dict[WebSocket, str] = {}
 finished_players: set[str] = set()
 last_shot_at: dict[str, float] = {}
 projectile_owners: dict[str, str] = {}
+resetting: bool = False
+player_names: dict[str, str] = {}
+wins: dict[str, int] = {}
 
 def generate_track_params():
     """Generate harmonics for a smooth, longer closed loop."""
     return {
-        "h1_a": random.uniform(5, 12),
+        "h1_a": random.uniform(10, 18),
         "h1_p": random.uniform(0, 6.28),
-        "h2_a": random.uniform(2, 6),
+        "h2_a": random.uniform(5, 10),
         "h2_p": random.uniform(0, 6.28),
-        "h3_a": random.uniform(1, 4),
+        "h3_a": random.uniform(4, 8),
         "h3_p": random.uniform(0, 6.28),
-        "h4_a": random.uniform(1, 9),
+        "h4_a": random.uniform(4, 12),
         "h4_p": random.uniform(0, 6.28),
+        "h5_a": random.uniform(3, 7),
+        "h5_p": random.uniform(0, 6.28),
     }
 
 current_track = generate_track_params()
@@ -51,7 +56,7 @@ async def broadcast(message: dict, exclude: WebSocket | None = None):
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
-    global current_track
+    global current_track, resetting
 
     await ws.accept()
     pid = uuid.uuid4().hex[:8]
@@ -62,6 +67,8 @@ async def ws_endpoint(ws: WebSocket):
         "type": "welcome",
         "id": pid,
         "track": current_track,
+        "names": player_names,
+        "wins": wins,
     })
 
     try:
@@ -70,18 +77,21 @@ async def ws_endpoint(ws: WebSocket):
             message_type = data.get("type")
 
             if message_type == "finish":
-                if pid in finished_players:
+                if pid in finished_players or resetting:
                     continue
 
                 finished_players.add(pid)
-                await broadcast({"type": "winner", "id": pid})
+                wins[pid] = wins.get(pid, 0) + 1
+                await broadcast({"type": "winner", "id": pid, "wins": wins[pid]})
 
                 # Keep the short winner screen, then start a new race.
+                resetting = True
                 await asyncio.sleep(4)
 
                 current_track = generate_track_params()
                 finished_players.clear()
                 projectile_owners.clear()
+                resetting = False
                 await broadcast({"type": "reset", "track": current_track})
                 continue
 
@@ -94,10 +104,11 @@ async def ws_endpoint(ws: WebSocket):
                     x = float(data["x"])
                     z = float(data["z"])
                     ang = float(data["ang"])
+                    speed = float(data.get("speed", 0))
                 except (KeyError, TypeError, ValueError):
                     continue
 
-                if not all(math.isfinite(v) for v in (x, z, ang)):
+                if not all(math.isfinite(v) for v in (x, z, ang, speed)):
                     continue
                 if abs(x) > 250 or abs(z) > 250:
                     continue
@@ -113,12 +124,16 @@ async def ws_endpoint(ws: WebSocket):
                     "x": x,
                     "z": z,
                     "ang": ang,
+                    "speed": speed,
                 })
                 continue
 
             if message_type == "projectile_hit":
                 projectile_id = str(data.get("projectile_id", ""))
                 target = str(data.get("target", ""))
+
+                if len(projectile_id) > 64 or len(target) > 64:
+                    continue
 
                 # Only the player who fired a shell may report its hit.
                 if projectile_owners.get(projectile_id) != pid:
@@ -144,6 +159,13 @@ async def ws_endpoint(ws: WebSocket):
                     "dx": max(-1.0, min(1.0, dx)),
                     "dz": max(-1.0, min(1.0, dz)),
                 })
+                continue
+
+            if message_type == "name":
+                name = str(data.get("name", "")).strip()[:20]
+                if name:
+                    player_names[pid] = name
+                    await broadcast({"type": "name", "id": pid, "name": name})
                 continue
 
             if message_type == "state":
@@ -175,6 +197,7 @@ async def ws_endpoint(ws: WebSocket):
         clients.pop(ws, None)
         last_shot_at.pop(pid, None)
         finished_players.discard(pid)
+        player_names.pop(pid, None)
 
         # Remove projectiles owned by the disconnected player.
         for projectile_id, owner in list(projectile_owners.items()):

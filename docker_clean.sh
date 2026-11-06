@@ -22,7 +22,7 @@ if [ -n "$SHIM_PIDS" ]; then
     echo "[+] Found lingering shim PID(s): $SHIM_PIDS. Forcibly terminating..."
     for pid in $SHIM_PIDS; do
         kill -9 "$pid" 2>/dev/null
-    .done
+    done
 else
     echo "[*] No active containerd-shim process found for $TARGET."
 fi

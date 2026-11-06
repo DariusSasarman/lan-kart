@@ -23,18 +23,21 @@ resetting: bool = False
 player_names: dict[str, str] = {}
 wins: dict[str, int] = {}
 
+THEMES = ["grass", "sand", "leaves", "snow", "dirt"]
+
 def generate_track_params():
     """Generate harmonics for a smooth, longer closed loop."""
     return {
-        "h1_a": random.uniform(10, 18),
+        "theme": random.choice(THEMES),
+        "h1_a": random.uniform(22, 32),
         "h1_p": random.uniform(0, 6.28),
-        "h2_a": random.uniform(5, 10),
+        "h2_a": random.uniform(12, 18),
         "h2_p": random.uniform(0, 6.28),
-        "h3_a": random.uniform(4, 8),
+        "h3_a": random.uniform(8, 14),
         "h3_p": random.uniform(0, 6.28),
-        "h4_a": random.uniform(4, 12),
+        "h4_a": random.uniform(10, 18),
         "h4_p": random.uniform(0, 6.28),
-        "h5_a": random.uniform(3, 7),
+        "h5_a": random.uniform(6, 12),
         "h5_p": random.uniform(0, 6.28),
     }
 

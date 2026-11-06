@@ -197,6 +197,7 @@ const CONFIG = {
     drag: 7,
 
     steering: 2.5,
+    minSteerFactor: 0.4,   // fraction of steering left at max speed
     kartRadius: 1.5,
 
     wallSpinSpeed: 10,
@@ -207,6 +208,7 @@ const CONFIG = {
 
     shellSpeed: 48,
     shellCooldown: 700,
+    shellMaxBounces: 3,
 
     laps: 3
 };
@@ -375,9 +377,6 @@ function addTrackObject(object) {
 /*
     Interpolates the original control points using a closed
     Catmull-Rom spline.
-
-    The original points define the overall shape.
-    The spline creates smooth transitions between them.
 */
 function interpolateTrack(controlPoints) {
     const curve = new THREE.CatmullRomCurve3(
@@ -391,7 +390,6 @@ function interpolateTrack(controlPoints) {
     const sampleCount = controlPoints.length * subdivisions;
 
     // getPoints includes the duplicated closing point.
-    // Remove it because the track is already treated as closed.
     return curve.getPoints(sampleCount).slice(0, -1);
 }
 
@@ -404,9 +402,7 @@ function buildTrack(params) {
     const controlPointCount = 128;
     const radius = CONFIG.trackRadius;
 
-    /* -----------------------------------------------------
-       1. Generate original control points
-    ----------------------------------------------------- */
+    /* 1. Generate original control points */
 
     const controlPoints = [];
 
@@ -430,35 +426,20 @@ function buildTrack(params) {
         );
     }
 
-    /* -----------------------------------------------------
-       2. Interpolate the track
-    ----------------------------------------------------- */
+    /* 2. Interpolate the track */
 
     trackPoints = interpolateTrack(controlPoints);
 
     const count = trackPoints.length;
 
-    /* -----------------------------------------------------
-       3. Calculate continuous tangents and normals
-
-       IMPORTANT:
-       Every point has exactly one normal.
-
-       Adjacent segments therefore use identical road-edge
-       positions at their shared endpoints.
-    ----------------------------------------------------- */
+    /* 3. Continuous tangents and normals (one per point) */
 
     const pointNormals = [];
     const pointTangents = [];
 
     for (let i = 0; i < count; i++) {
-        const previous = trackPoints[
-            (i - 1 + count) % count
-        ];
-
-        const next = trackPoints[
-            (i + 1) % count
-        ];
+        const previous = trackPoints[(i - 1 + count) % count];
+        const next = trackPoints[(i + 1) % count];
 
         const tangent = new THREE.Vector3()
             .subVectors(next, previous)
@@ -474,14 +455,13 @@ function buildTrack(params) {
         pointNormals.push(normal);
     }
 
-    /* -----------------------------------------------------
-       4. Build track segments
-    ----------------------------------------------------- */
+    /* 4. Track segments */
 
     for (let i = 0; i < count; i++) {
         const nextIndex = (i + 1) % count;
 
         trackSegments.push({
+            index: i,
             a: trackPoints[i],
             b: trackPoints[nextIndex],
             tangent: pointTangents[i],
@@ -489,9 +469,7 @@ function buildTrack(params) {
         });
     }
 
-    /* -----------------------------------------------------
-       5. Build road and wall geometry
-    ----------------------------------------------------- */
+    /* 5. Road and wall geometry */
 
     const roadVertices = [];
     const roadIndices = [];
@@ -512,17 +490,10 @@ function buildTrack(params) {
         const normalA = pointNormals[i];
         const normalB = pointNormals[nextIndex];
 
-        const leftA = a.clone()
-            .addScaledVector(normalA, halfWidth);
-
-        const rightA = a.clone()
-            .addScaledVector(normalA, -halfWidth);
-
-        const leftB = b.clone()
-            .addScaledVector(normalB, halfWidth);
-
-        const rightB = b.clone()
-            .addScaledVector(normalB, -halfWidth);
+        const leftA = a.clone().addScaledVector(normalA, halfWidth);
+        const rightA = a.clone().addScaledVector(normalA, -halfWidth);
+        const leftB = b.clone().addScaledVector(normalB, halfWidth);
+        const rightB = b.clone().addScaledVector(normalB, -halfWidth);
 
         /* Road */
 
@@ -535,7 +506,6 @@ function buildTrack(params) {
             rightB.x, 0.02, rightB.z
         );
 
-        // Correct upward-facing triangle winding.
         roadIndices.push(
             base, base + 2, base + 1,
             base + 1, base + 2, base + 3
@@ -569,16 +539,10 @@ function buildTrack(params) {
 
         if (i % 32 === 0) {
             const mid = a.clone().lerp(b, 0.5);
-
             const tangent = pointTangents[i];
 
-            const p1 = mid.clone().addScaledVector(
-                tangent, -0.7
-            );
-
-            const p2 = mid.clone().addScaledVector(
-                tangent, 0.7
-            );
+            const p1 = mid.clone().addScaledVector(tangent, -0.7);
+            const p2 = mid.clone().addScaledVector(tangent, 0.7);
 
             markingVertices.push(
                 p1.x, 0.04, p1.z,
@@ -587,9 +551,7 @@ function buildTrack(params) {
         }
     }
 
-    /* -----------------------------------------------------
-       6. Create road mesh
-    ----------------------------------------------------- */
+    /* 6. Road mesh */
 
     const roadGeometry = new THREE.BufferGeometry();
 
@@ -601,18 +563,12 @@ function buildTrack(params) {
     roadGeometry.setIndex(roadIndices);
     roadGeometry.computeVertexNormals();
 
-    const road = new THREE.Mesh(
-        roadGeometry,
-        materials.asphalt
-    );
-
+    const road = new THREE.Mesh(roadGeometry, materials.asphalt);
     road.receiveShadow = true;
 
     addTrackObject(road);
 
-    /* -----------------------------------------------------
-       7. Create wall mesh
-    ----------------------------------------------------- */
+    /* 7. Wall mesh */
 
     const wallGeometry = new THREE.BufferGeometry();
 
@@ -637,9 +593,7 @@ function buildTrack(params) {
 
     addTrackObject(walls);
 
-    /* -----------------------------------------------------
-       8. Create road markings
-    ----------------------------------------------------- */
+    /* 8. Road markings */
 
     const lineGeometry = new THREE.BufferGeometry();
 
@@ -648,36 +602,22 @@ function buildTrack(params) {
         new THREE.Float32BufferAttribute(markingVertices, 3)
     );
 
-    const lines = new THREE.LineSegments(
-        lineGeometry,
-        materials.line
-    );
+    const lines = new THREE.LineSegments(lineGeometry, materials.line);
 
     addTrackObject(lines);
 
-    /* -----------------------------------------------------
-       9. Start line and spawn
-    ----------------------------------------------------- */
+    /* 9. Start line and spawn */
 
     const first = trackPoints[0];
     const direction = pointTangents[0];
 
-    spawnAngle = Math.atan2(
-        direction.x,
-        direction.z
-    );
+    spawnAngle = Math.atan2(direction.x, direction.z);
 
-    spawnPosition.copy(first)
-        .addScaledVector(direction, -6);
-
+    spawnPosition.copy(first).addScaledVector(direction, -6);
     spawnPosition.y = 0;
 
     const startLine = new THREE.Mesh(
-        new THREE.BoxGeometry(
-            CONFIG.trackWidth,
-            0.035,
-            1.2
-        ),
+        new THREE.BoxGeometry(CONFIG.trackWidth, 0.035, 1.2),
         new THREE.MeshStandardMaterial({
             color: 0xffffff,
             emissive: 0x333333
@@ -690,9 +630,7 @@ function buildTrack(params) {
 
     addTrackObject(startLine);
 
-    /* -----------------------------------------------------
-       10. Checkered finish line
-    ----------------------------------------------------- */
+    /* 10. Checkered finish line */
 
     const squareSize = 0.8;
     const tileCount = Math.floor(CONFIG.trackWidth / squareSize);
@@ -703,13 +641,8 @@ function buildTrack(params) {
         squareSize
     );
 
-    const blackMaterial = new THREE.MeshStandardMaterial({
-        color: 0x111111
-    });
-
-    const whiteMaterial = new THREE.MeshStandardMaterial({
-        color: 0xffffff
-    });
+    const blackMaterial = new THREE.MeshStandardMaterial({ color: 0x111111 });
+    const whiteMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff });
 
     const lateral = new THREE.Vector3(
         Math.cos(spawnAngle),
@@ -723,12 +656,9 @@ function buildTrack(params) {
             (i % 2 === 0) ? blackMaterial : whiteMaterial
         );
 
-        const offset =
-            (i - (tileCount - 1) / 2) * squareSize;
+        const offset = (i - (tileCount - 1) / 2) * squareSize;
 
-        tile.position.copy(first)
-            .addScaledVector(lateral, offset);
-
+        tile.position.copy(first).addScaledVector(lateral, offset);
         tile.position.y = 0.08;
 
         addTrackObject(tile);
@@ -778,9 +708,7 @@ function makeKart(color) {
     cabin.castShadow = true;
     visual.add(cabin);
 
-    const wheelGeometry = new THREE.CylinderGeometry(
-        0.36, 0.36, 0.3, 16
-    );
+    const wheelGeometry = new THREE.CylinderGeometry(0.36, 0.36, 0.3, 16);
 
     for (const [x, z] of [
         [-0.88, 0.9],
@@ -788,10 +716,7 @@ function makeKart(color) {
         [-0.88, -0.9],
         [0.88, -0.9]
     ]) {
-        const wheel = new THREE.Mesh(
-            wheelGeometry,
-            materials.black
-        );
+        const wheel = new THREE.Mesh(wheelGeometry, materials.black);
 
         wheel.rotation.z = Math.PI / 2;
         wheel.position.set(x, 0.35, z);
@@ -949,6 +874,7 @@ ws.onmessage = event => {
 
         remote.targetAngle = message.ang;
         remote.speed = message.speed || 0;
+        remote.spin = message.spin || 0;
 
         updatePlayerCount();
     }
@@ -970,19 +896,11 @@ ws.onmessage = event => {
 
     if (message.type === "projectile_hit") {
         if (message.target === myId) {
-            const impulse = new THREE.Vector3(
-                message.dx,
-                0,
-                message.dz
-            );
+            const dir = new THREE.Vector3(message.dx, 0, message.dz);
+            if (dir.lengthSq() > 0.001) dir.normalize();
 
-            if (impulse.lengthSq() > 0.001) {
-                knockback.add(
-                    impulse.normalize().multiplyScalar(14)
-                );
-            }
-
-            vel *= 0.55;
+            // startWallSpin pushes along -normal, so pass the negated direction
+            startWallSpin(dir.negate());
         }
 
         removeShell(message.projectile_id);
@@ -1047,10 +965,7 @@ function shootShell() {
 function createShell(message) {
     if (shells.has(message.projectile_id)) return;
 
-    const mesh = new THREE.Mesh(
-        shellGeometry,
-        materials.shell
-    );
+    const mesh = new THREE.Mesh(shellGeometry, materials.shell);
 
     const forward = new THREE.Vector3(
         Math.sin(message.ang),
@@ -1071,6 +986,7 @@ function createShell(message) {
         owner: message.owner,
         velocity: forward.multiplyScalar(CONFIG.shellSpeed),
         age: 0,
+        bounces: 0,
         reportedHit: false
     });
 }
@@ -1088,10 +1004,30 @@ function updateShells(dt) {
     for (const [id, shell] of shells) {
         shell.age += dt;
 
-        shell.mesh.position.addScaledVector(
-            shell.velocity,
-            dt
-        );
+        shell.mesh.position.addScaledVector(shell.velocity, dt);
+
+        /* Wall bounce */
+
+        const wallHit = closestTrackPoint(shell.mesh.position);
+        const limit = CONFIG.trackWidth / 2 - 0.38;
+
+        if (wallHit.distance > limit) {
+            const n = shell.mesh.position.clone().sub(wallHit.point);
+            n.y = 0;
+            n.normalize();
+
+            const into = shell.velocity.dot(n);
+            if (into > 0) shell.velocity.addScaledVector(n, -2 * into);
+
+            shell.mesh.position.copy(wallHit.point)
+                .addScaledVector(n, limit - 0.05);
+            shell.mesh.position.y = 0.75;
+
+            if (++shell.bounces > CONFIG.shellMaxBounces) {
+                removeShell(id);
+                continue;
+            }
+        }
 
         if (
             shell.age > 2.5 ||
@@ -1139,11 +1075,8 @@ function closestTrackPoint(position) {
     let bestSegment = null;
 
     for (const segment of trackSegments) {
-        const ab = new THREE.Vector3()
-            .subVectors(segment.b, segment.a);
-
-        const ap = new THREE.Vector3()
-            .subVectors(position, segment.a);
+        const ab = new THREE.Vector3().subVectors(segment.b, segment.a);
+        const ap = new THREE.Vector3().subVectors(position, segment.a);
 
         const t = THREE.MathUtils.clamp(
             ap.dot(ab) / ab.lengthSq(),
@@ -1183,8 +1116,7 @@ function startWallSpin(normal) {
     spinAngle = 0;
     spinVelocity = CONFIG.wallSpinSpeed;
 
-    bounceVelocity.copy(normal)
-        .multiplyScalar(-CONFIG.wallBounceSpeed);
+    bounceVelocity.copy(normal).multiplyScalar(-CONFIG.wallBounceSpeed);
 
     bounceTimer = CONFIG.wallBounceDuration;
 
@@ -1195,14 +1127,9 @@ function updateSpin(dt) {
     if (bounceTimer > 0) {
         const step = Math.min(dt, bounceTimer);
 
-        player.root.position.addScaledVector(
-            bounceVelocity,
-            step
-        );
+        player.root.position.addScaledVector(bounceVelocity, step);
 
-        bounceVelocity.multiplyScalar(
-            Math.exp(-7 * step)
-        );
+        bounceVelocity.multiplyScalar(Math.exp(-7 * step));
 
         bounceTimer -= step;
 
@@ -1213,9 +1140,7 @@ function updateSpin(dt) {
 
     spinAngle += spinVelocity * dt;
 
-    spinVelocity *= Math.exp(
-        -CONFIG.wallSpinDamping * dt
-    );
+    spinVelocity *= Math.exp(-CONFIG.wallSpinDamping * dt);
 
     player.visual.rotation.y = spinAngle;
 
@@ -1233,10 +1158,6 @@ function updateSpin(dt) {
         knockback.set(0, 0, 0);
     }
 }
-
-/* =========================================================
-   PLAYER COLLISIONS
-========================================================= */
 
 /* =========================================================
    PLAYER COLLISIONS
@@ -1267,7 +1188,6 @@ function handlePlayerCollision(nextPosition) {
             nx = dx / distance;
             nz = dz / distance;
         } else {
-            // Fallback if both karts occupy almost the same position.
             nx = Math.sin(ang);
             nz = Math.cos(ang);
         }
@@ -1287,12 +1207,72 @@ function handlePlayerCollision(nextPosition) {
             knockback.x += nx * impulse;
             knockback.z += nz * impulse;
 
-            // Small loss of speed, without changing steering direction.
             vel *= 0.75;
 
             playerCollisionCooldowns.set(id, 0.25);
         }
     }
+}
+
+/* =========================================================
+   LAP SYSTEM
+========================================================= */
+
+let lap = 1;
+let lapTime = 0;
+let bestLap = null;
+
+let progress = 0;   // unwrapped track index (negative before the line)
+let lastIndex = 0;
+let lapsDone = 0;
+
+function nearestIndex() {
+    return closestTrackPoint(player.root.position).segment.index;
+}
+
+function initProgress() {
+    const n = trackSegments.length;
+
+    lastIndex = nearestIndex();
+
+    // spawn is slightly behind the line, so start just below 0
+    progress = lastIndex > n / 2 ? lastIndex - n : lastIndex;
+    lapsDone = 0;
+}
+
+function updateLaps(dt) {
+    if (finished) return;
+
+    const n = trackSegments.length;
+    const idx = nearestIndex();
+
+    let delta = idx - lastIndex;
+    if (delta > n / 2) delta -= n;
+    if (delta < -n / 2) delta += n;
+
+    progress += delta;
+    lastIndex = idx;
+
+    const completed = Math.floor(progress / n);
+
+    if (completed > lapsDone) {
+        lapsDone = completed;
+
+        if (bestLap === null || lapTime < bestLap) bestLap = lapTime;
+        lapTime = 0;
+
+        if (lapsDone >= CONFIG.laps) {
+            finished = true;
+
+            if (!sentFinish) {
+                sentFinish = true;
+                send({ type: "finish" });
+            }
+        }
+    }
+
+    lap = Math.min(lapsDone + 1, CONFIG.laps);
+    lapTime += dt;
 }
 
 /* =========================================================
@@ -1302,23 +1282,21 @@ function handlePlayerCollision(nextPosition) {
 function updateDriving(dt) {
     if (finished || !raceStarted) return;
 
+    for (const [id, t] of playerCollisionCooldowns) {
+        playerCollisionCooldowns.set(id, Math.max(0, t - dt));
+    }
+
     if (spinLocked) {
         updateSpin(dt);
+        updateLaps(dt);
         updateShells(dt);
         return;
     }
 
-    const accelerate =
-        keys["w"] || keys["arrowup"];
-
-    const reverse =
-        keys["s"] || keys["arrowdown"];
-
-    const left =
-        keys["a"] || keys["arrowleft"];
-
-    const right =
-        keys["d"] || keys["arrowright"];
+    const accelerate = keys["w"] || keys["arrowup"];
+    const reverse = keys["s"] || keys["arrowdown"];
+    const left = keys["a"] || keys["arrowleft"];
+    const right = keys["d"] || keys["arrowright"];
 
     if (accelerate) {
         vel += CONFIG.acceleration * dt;
@@ -1346,20 +1324,17 @@ function updateDriving(dt) {
         CONFIG.maxSpeed
     );
 
-    const speedFactor = Math.min(
-        1,
-        Math.abs(vel) / 8
-    );
+    /* Steering: harder at higher speed */
 
+    const speedFactor = Math.min(1, Math.abs(vel) / 8);
     const steeringDirection = vel >= 0 ? 1 : -1;
 
-    if (left) {
-        ang += CONFIG.steering * speedFactor * dt * steeringDirection;
-    }
+    const speedRatio = Math.abs(vel) / CONFIG.maxSpeed;
+    const grip = 1 - (1 - CONFIG.minSteerFactor) * speedRatio;
+    const steerRate = CONFIG.steering * speedFactor * grip;
 
-    if (right) {
-        ang -= CONFIG.steering * speedFactor * dt * steeringDirection;
-    }
+    if (left)  ang += steerRate * dt * steeringDirection;
+    if (right) ang -= steerRate * dt * steeringDirection;
 
     const forward = new THREE.Vector3(
         Math.sin(ang),
@@ -1372,8 +1347,7 @@ function updateDriving(dt) {
 
     const closest = closestTrackPoint(nextPosition);
 
-    const safeDistance =
-        CONFIG.trackWidth / 2 - CONFIG.kartRadius;
+    const safeDistance = CONFIG.trackWidth / 2 - CONFIG.kartRadius;
 
     if (closest.distance > safeDistance) {
         const normal = nextPosition.clone()
@@ -1393,14 +1367,9 @@ function updateDriving(dt) {
     }
 
     if (knockback.lengthSq() > 0.01) {
-        player.root.position.addScaledVector(
-            knockback,
-            dt
-        );
+        player.root.position.addScaledVector(knockback, dt);
 
-        knockback.multiplyScalar(
-            Math.exp(-5 * dt)
-        );
+        knockback.multiplyScalar(Math.exp(-5 * dt));
     }
 
     player.root.position.y = 0;
@@ -1413,77 +1382,12 @@ function updateDriving(dt) {
 }
 
 /* =========================================================
-   LAP SYSTEM
-========================================================= */
-
-// Checkpoint positions are now calculated from the
-// interpolated track, not the original 128 control points.
-
-const checkpoints = [
-    0,
-    Math.floor(trackPoints.length * 0.25),
-    Math.floor(trackPoints.length * 0.50),
-    Math.floor(trackPoints.length * 0.75)
-];
-
-let nextCheckpoint = 1;
-let lap = 1;
-let lapTime = 0;
-let bestLap = null;
-
-let checkpointCooldown = 0;
-
-function updateLaps(dt) {
-    if (finished || spinLocked) return;
-
-    checkpointCooldown = Math.max(
-        0,
-        checkpointCooldown - dt
-    );
-
-    const checkpointIndex = checkpoints[nextCheckpoint];
-    const target = trackPoints[checkpointIndex];
-
-    const distance = Math.hypot(
-        player.root.position.x - target.x,
-        player.root.position.z - target.z
-    );
-
-    if (distance < 10 && checkpointCooldown <= 0) {
-        checkpointCooldown = 0.8;
-
-        nextCheckpoint =
-            (nextCheckpoint + 1) % checkpoints.length;
-
-        if (nextCheckpoint === 0) {
-            if (bestLap === null || lapTime < bestLap) {
-                bestLap = lapTime;
-            }
-
-            lapTime = 0;
-            lap++;
-
-            if (lap > CONFIG.laps) {
-                finished = true;
-                lap = CONFIG.laps;
-
-                if (!sentFinish) {
-                    sentFinish = true;
-                    send({ type: "finish" });
-                }
-            }
-        }
-    }
-
-    lapTime += dt;
-}
-
-/* =========================================================
    RESET
 ========================================================= */
 
 function resetRace() {
     positionPlayerAtSpawn();
+    initProgress();
 
     lap = 1;
     lapTime = 0;
@@ -1491,9 +1395,6 @@ function resetRace() {
 
     finished = false;
     sentFinish = false;
-
-    nextCheckpoint = 1;
-    checkpointCooldown = 0;
 
     lastShotAt = 0;
 
@@ -1544,10 +1445,7 @@ function updateRemotePlayers(dt) {
     for (const remote of remoteKarts.values()) {
         if (!remote.targetPosition) continue;
 
-        remote.root.position.lerp(
-            remote.targetPosition,
-            blend
-        );
+        remote.root.position.lerp(remote.targetPosition, blend);
 
         if (remote.targetAngle !== undefined) {
             let difference =
@@ -1563,6 +1461,8 @@ function updateRemotePlayers(dt) {
 
             remote.root.rotation.y += difference * blend;
         }
+
+        remote.visual.rotation.y = remote.spin || 0;
     }
 }
 
@@ -1584,7 +1484,8 @@ function sendPlayerState(dt) {
         x: player.root.position.x,
         z: player.root.position.z,
         ang,
-        speed: vel
+        speed: vel,
+        spin: spinAngle
     });
 }
 
@@ -1656,15 +1557,11 @@ requestAnimationFrame(animate);
 ========================================================= */
 
 window.addEventListener("resize", () => {
-    camera.aspect =
-        window.innerWidth / window.innerHeight;
+    camera.aspect = window.innerWidth / window.innerHeight;
 
     camera.updateProjectionMatrix();
 
-    renderer.setSize(
-        window.innerWidth,
-        window.innerHeight
-    );
+    renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
 </script>

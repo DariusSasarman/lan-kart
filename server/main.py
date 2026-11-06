@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(title="LAN Kart")
 
-# Fixed: Removed one `.parent` so it resolves to the folder containing main.py
+# Resolves to the folder containing main.py's parent
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
 STATIC_DIR.mkdir(exist_ok=True)
@@ -76,7 +76,7 @@ async def ws_endpoint(ws: WebSocket):
                 finished_players.add(pid)
                 await broadcast({"type": "winner", "id": pid})
 
-                # Keep the existing short winner screen, then start a new race.
+                # Keep the short winner screen, then start a new race.
                 await asyncio.sleep(4)
 
                 current_track = generate_track_params()
@@ -152,10 +152,11 @@ async def ws_endpoint(ws: WebSocket):
                     z = float(data["z"])
                     ang = float(data["ang"])
                     speed = float(data.get("speed", 0))
+                    spin = float(data.get("spin", 0))
                 except (KeyError, TypeError, ValueError):
                     continue
 
-                if not all(math.isfinite(v) for v in (x, z, ang, speed)):
+                if not all(math.isfinite(v) for v in (x, z, ang, speed, spin)):
                     continue
 
                 await broadcast({
@@ -165,6 +166,7 @@ async def ws_endpoint(ws: WebSocket):
                     "z": z,
                     "ang": ang,
                     "speed": speed,
+                    "spin": spin,
                 }, exclude=ws)
 
     except WebSocketDisconnect:
@@ -185,5 +187,5 @@ app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 
 if __name__ == "__main__":
     import uvicorn
-    # Execute this file directly via `python main.py` to start the webserver
+    # Run directly via `python main.py`
     uvicorn.run(app, host="127.0.0.1", port=8000)
